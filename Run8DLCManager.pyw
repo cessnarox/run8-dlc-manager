@@ -3287,7 +3287,7 @@ if HAVE_TK:
                                       command=self.open_store)
             self.b_store.grid(row=1, column=1, sticky="we",
                               padx=(3, 0), pady=2)
-            self.b_buy = ttk.Button(bt, text="Buy on 3DTS store",
+            self.b_buy = ttk.Button(bt, text="Buy (official store)",
                                     style="Accent.TButton",
                                     command=self.open_store)
             self.b_buy.grid(row=2, column=0, columnspan=2, sticky="we",
@@ -3364,8 +3364,8 @@ if HAVE_TK:
                        if str(self.b_restore.cget("state")) != "disabled"
                        else "Nothing is disabled for this product")
             attach_tip(self.b_buy,
-                       "Opens the product's page on the real 3DTS store "
-                       "in your browser")
+                       "Opens the product's page on Run8's official "
+                       "store (3DTS) in your browser")
             attach_tip(self.b_store,
                        "Opens the product's page on the 3DTS store "
                        "in your browser")
@@ -3790,51 +3790,78 @@ if HAVE_TK:
                 dsc = (capp.by_id.get(pid, {}) or {}
                        ).get("desc") or ""
                 d["dsc"] = dsc
+                if r.get("price") is not None:
+                    ptxt = f"${r['price']:.0f}"
+                elif st == "missing":
+                    ptxt = "$?"
+                else:
+                    ptxt = ""
+                pw_ = (self.f_tile.measure(ptxt) + 14) if ptxt else 0
                 t_id = c.create_text(12, yy, anchor="nw",
                                      text=r["name"], fill=FG,
                                      font=self.f_tile,
-                                     width=wrapw - 20,
+                                     width=max(60, wrapw - 20 - pw_),
                                      tags=(tag, tag + "_ttl"))
                 bb = c.bbox(t_id)
+                if ptxt:
+                    c.create_text(inner_w - 12, yy, anchor="ne",
+                                  text=ptxt,
+                                  fill=(ACCENT2 if st == "missing"
+                                        else DIM),
+                                  font=self.f_tile, tags=(tag, sel))
                 if dsc:
                     d["arrow"] = c.create_text(
                         bb[2] + 7, bb[1], anchor="nw", text="▾",
                         fill=ACCENT2, font=self.f_tile,
                         tags=(tag, tag + "_tog"))
-                yy = bb[3] + 6
+                yy = max(bb[3],
+                         yy + self.f_tile.metrics("linespace")) + 6
                 d["desc_y"] = yy
-                line_h = self.f_chip.metrics("linespace")
-                if st == "missing":
-                    ptxt = (f"${r['price']:.0f}"
-                            if r.get("price") is not None else "$?")
-                    c.create_text(12, yy, anchor="nw", text=ptxt,
-                                  fill=ACCENT2, font=self.f_price,
-                                  tags=(tag, sel))
-                    yy += self.f_price.metrics("linespace") + 8
-                else:
-                    c.create_text(12, yy, anchor="nw",
-                                  text=STATUS_LABEL[st].upper(),
-                                  fill=STATUS_COLOR[st],
-                                  font=self.f_chip, tags=(tag, sel))
-                    if r.get("price") is not None:
-                        c.create_text(inner_w - 12, yy, anchor="ne",
-                                      text=f"${r['price']:.0f}",
-                                      fill=DIM, font=self.f_chip,
-                                      tags=(tag, sel))
-                    yy += line_h + 8
-                bx = [12]
-
-                def _btn(label, cb, yy=yy, bx=bx, tag=tag,
-                         accent=False, danger=False):
-                    w_ = self.f_chip.measure(label) + 24
-                    btag = f"{tag}_b{bx[0]}"
+                # status chip left, action buttons right -- one line
+                TILE_CHIP = {"installed": "INSTALLED",
+                             "owned": "OWNED",
+                             "quarantined": "DISABLED",
+                             "missing": "NOT OWNED"}
+                c.create_text(12, yy + 13, anchor="w",
+                              text=TILE_CHIP[st],
+                              fill=STATUS_COLOR[st],
+                              font=self.f_chip, tags=(tag, sel))
+                btns = []
+                if st == "missing" and r.get("url"):
+                    btns.append(("Buy",
+                                 lambda pid=pid: self._tile_buy(pid),
+                                 True, False))
+                if st in ("installed", "owned"):
+                    btns.append(("Reinstall" if st == "installed"
+                                 else "Run installer",
+                                 lambda pid=pid:
+                                 self._card_act(pid, self.reinstall),
+                                 False, False))
+                if st == "installed" and (
+                        DEMO_MODE or
+                        bool(_game_paths_for(capp, pid,
+                                             self.state)[0])):
+                    btns.append(("Disable",
+                                 lambda pid=pid:
+                                 self._card_act(pid, self.uninstall),
+                                 False, True))
+                if st == "quarantined":
+                    btns.append(("Enable",
+                                 lambda pid=pid:
+                                 self._card_act(pid, self.restore),
+                                 False, False))
+                widths = [self.f_chip.measure(b_[0]) + 24
+                          for b_ in btns]
+                bx = inner_w - 12 - (sum(widths)
+                                     + 8 * max(0, len(btns) - 1))
+                for (lb, cb, accent, danger), w_ in zip(btns, widths):
+                    btag = f"{tag}_b{int(bx)}"
                     c.create_rectangle(
-                        bx[0], yy, bx[0] + w_, yy + 26,
+                        bx, yy, bx + w_, yy + 26,
                         fill=(ACCENT if accent else FIELD),
                         outline=(MISSC if danger else ""),
                         tags=(tag, btag))
-                    c.create_text(bx[0] + w_ // 2, yy + 13,
-                                  text=label,
+                    c.create_text(bx + w_ // 2, yy + 13, text=lb,
                                   fill=(ACC_FG if accent else
                                         MISSC if danger else FG),
                                   font=self.f_chip, tags=(tag, btag))
@@ -3844,35 +3871,8 @@ if HAVE_TK:
                                c.configure(cursor="hand2"))
                     c.tag_bind(btag, "<Leave>", lambda e:
                                c.configure(cursor=""))
-                    bx[0] += w_ + 8
-
-                nbtn = 0
-                if st == "missing" and r.get("url"):
-                    _btn("Buy on 3DTS",
-                         lambda pid=pid: self._tile_buy(pid),
-                         accent=True)
-                    nbtn += 1
-                if st in ("installed", "owned"):
-                    _btn("Reinstall" if st == "installed"
-                         else "Run installer",
-                         lambda pid=pid:
-                         self._card_act(pid, self.reinstall))
-                    nbtn += 1
-                if st == "installed" and (
-                        DEMO_MODE or
-                        bool(_game_paths_for(capp, pid,
-                                             self.state)[0])):
-                    _btn("Disable",
-                         lambda pid=pid:
-                         self._card_act(pid, self.uninstall),
-                         danger=True)
-                    nbtn += 1
-                if st == "quarantined":
-                    _btn("Enable",
-                         lambda pid=pid:
-                         self._card_act(pid, self.restore))
-                    nbtn += 1
-                yy += (26 + 10) if nbtn else 2
+                    bx += w_ + 8
+                yy += 26 + 8
                 d["h"] = yy + 4
                 c.coords(d["card"], 0, 0, inner_w, d["h"])
                 c.tag_bind(sel, "<Button-1>",
