@@ -77,7 +77,7 @@ def _resolve_data_dir():
 
 APP_DIR = _resolve_app_dir()
 DATA_DIR = _resolve_data_dir()
-VERSION = "0.9.17"
+VERSION = "1.0"
 DEMO_MODE = False
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -91,10 +91,13 @@ def detect_defaults():
         if Path(c).is_dir():
             run8 = c
             break
+    # if the app sits somewhere unwritable (Program Files), DATA_DIR
+    # fell back to APPDATA -- the user folders must follow it
+    _root = APP_DIR if DATA_DIR.parent == APP_DIR else DATA_DIR
     return {
-        "installers_dir": str(APP_DIR / "Installers"),
+        "installers_dir": str(_root / "Installers"),
         "transactions_dir": str(DATA_DIR / "Receipts"),
-        "backup_dir": str(APP_DIR / "Backups"),
+        "backup_dir": str(_root / "Backups"),
         "run8_install": run8 or r"C:\Run8Studios\Run8 Train Simulator V3",
         "updater_exe": str(Path(run8 or r"C:\Run8Studios\Run8 Train Simulator V3")
                            / "Run8_Updater.exe"),
@@ -258,13 +261,17 @@ RECEIPT_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".html", ".htm", ".pdf"}
 
 # ---------------------------------------------------------------- utilities
 
-def out(msg=""):
-    """ASCII-safe print (old Windows consoles choke on unicode)."""
+def out(msg="", err=False):
+    """ASCII-safe print (old Windows consoles choke on unicode).
+    Always flushed: the GUI streams this output live from a child
+    process, and the frozen EXE would otherwise block-buffer it."""
+    stream = sys.stderr if err else sys.stdout
     try:
-        print(msg)
+        print(msg, file=stream, flush=True)
     except UnicodeEncodeError:
-        print(msg.encode("ascii", "replace").decode("ascii"))
-    except BrokenPipeError:
+        print(msg.encode("ascii", "replace").decode("ascii"),
+              file=stream, flush=True)
+    except (BrokenPipeError, OSError):
         pass
 
 
@@ -290,9 +297,14 @@ def load_json(path, default):
 
 
 def save_json(path, data):
-    with open(path, "w", encoding="utf-8") as f:
+    """Atomic: write a temp file, then swap it in -- a crash or Stop
+    press can never leave a half-written ledger behind."""
+    pth = Path(path)
+    tmp = pth.with_suffix(pth.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
         f.write("\n")
+    os.replace(tmp, pth)
 
 
 def squash(s):
@@ -735,14 +747,21 @@ def uninstall_product(app, pid, apply=False, state=None):
     dest_root = UNINSTALLED_DIR / pid / stamp
     dest_root.mkdir(parents=True, exist_ok=True)
     rec = {"pid": pid, "name": prod["name"], "when": stamp, "items": []}
-    for i, ap in enumerate(good):
-        dst = dest_root / f"{i:02d}_{ap.name}"
-        shutil.move(str(ap), str(dst))
-        rec["items"].append({"orig": str(ap), "moved_to": str(dst)})
-        lines.append(f"  moved {ap.name} -> {dst}")
     q = load_quarantine()
     q["records"].append(rec)
-    save_quarantine(q)
+    for i, ap in enumerate(good):
+        dst = dest_root / f"{i:02d}_{ap.name}"
+        try:
+            shutil.move(str(ap), str(dst))
+        except OSError as e:
+            save_quarantine(q)
+            lines.append(f"  STOPPED: could not move {ap.name} ({e}) "
+                         "-- is Run8 running? Folders moved so far are "
+                         "recorded; Enable puts them back.")
+            return False, lines
+        rec["items"].append({"orig": str(ap), "moved_to": str(dst)})
+        save_quarantine(q)
+        lines.append(f"  moved {ap.name} -> {dst}")
     lines.append(f"{prod['name']} quarantined ({len(good)} folder(s)). "
                  "Use 'restore' to undo.")
     return True, lines
@@ -1303,34 +1322,6 @@ def cmd_transactions(app, args):
 
 
 
-NAV_NOISE = re.compile(
-    r"HOME\s*\||PRESS RELEASES|USA PRODUCTS|UK PRODUCTS|ONLINE STORE|"
-    r"CONTACT US|COPYRIGHT|ALL RIGHTS RESERVED|TRAIN SIMULATOR BY RUN8|"
-    r"OVERVIEW\s*\||\|\s*UPDATES|meta-Description|^title:|BUY IT NOW|"
-    r"CLICK HERE|Learn more|^-{2,}$", re.I)
-
-
-def product_page_text(url):
-    """Fetch a run8studios.com product page and reduce it to readable
-    prose for the in-app viewer."""
-    h = fetch(url, timeout=15)
-    t = html_to_text(h)
-    lines, blank = [], 0
-    for ln in t.splitlines():
-        ln = ln.strip()
-        if NAV_NOISE.search(ln):
-            continue
-        if not ln:
-            blank += 1
-            if blank > 1:
-                continue
-        else:
-            blank = 0
-        lines.append(ln)
-    body = "\n".join(lines).strip()
-    body = re.sub(r"\n{3,}", "\n\n", body)
-    return body or "(page was empty)"
-
 
 
 def quarantine_size(app):
@@ -1346,8 +1337,8 @@ def quarantine_size(app):
 
 def cmd_purge_quarantine(app, args):
     qdir = DATA_DIR / "uninstalled"
-    quar = load_json(DATA_DIR / "quarantine.json", {"items": []})
-    n_items = len(quar.get("items", []))
+    quar = load_quarantine()
+    n_items = len(quar.get("records", []))
     n_files, total = quarantine_size(app)
     if n_files == 0 and n_items == 0:
         out("Quarantine is already empty.")
@@ -1360,7 +1351,7 @@ def cmd_purge_quarantine(app, args):
         return 1
     if qdir.exists():
         shutil.rmtree(qdir, ignore_errors=True)
-    save_json(DATA_DIR / "quarantine.json", {"items": []})
+    save_quarantine({"version": 1, "records": []})
     out(f"Purged. {total/1048576:.0f} MB freed. Reinstalling any of these "
         "routes now requires running their installers again.")
     return 0
@@ -1963,7 +1954,9 @@ def cmd_media(app, args):
                             "-ExecutionPolicy", "Bypass", "-File", str(ps1),
                             "-InDir", str(cand_dir), "-OutJson", str(tmp2),
                             "-Files"] + fresh, capture_output=True,
-                           text=True, timeout=1200)
+                           text=True, timeout=1200,
+                           creationflags=getattr(subprocess,
+                                                 "CREATE_NO_WINDOW", 0))
         if r.returncode != 0:
             out((r.stderr or "OCR failed").strip()[:300])
             return 1
@@ -2031,7 +2024,9 @@ def cmd_media(app, args):
                         "-OutDir", str(media),
                         "-NoCrop", "base_v3,updates"],
                        capture_output=True,
-                       text=True, timeout=600)
+                       text=True, timeout=600,
+                       creationflags=getattr(subprocess,
+                                             "CREATE_NO_WINDOW", 0))
     for ln in (r.stdout or "").splitlines()[-3:]:
         out("  " + ln)
 
@@ -2120,7 +2115,10 @@ def cmd_ocr_receipts(app, args):
             cmd += ["-Files"] + [f.name for f in todo]
         try:
             r = subprocess.run(cmd, capture_output=True, text=True,
-                               timeout=1200)
+                               timeout=1200,
+                               creationflags=getattr(subprocess,
+                                                     "CREATE_NO_WINDOW",
+                                                     0))
         except subprocess.TimeoutExpired:
             out("OCR timed out.")
             return 1
@@ -2631,12 +2629,21 @@ def main(argv=None):
 
 
 def restart_app():
-    """Relaunch this program (used when the color theme changes)."""
-    if getattr(sys, "frozen", False):
-        os.execl(sys.executable, sys.executable)
-    else:
-        os.execl(sys.executable, sys.executable,
-                 str(Path(__file__).resolve()))
+    """Relaunch this program (used when the color theme changes).
+    subprocess list-argv quotes correctly -- os.execl mangled any
+    install path containing spaces and the app silently vanished."""
+    try:
+        if getattr(sys, "frozen", False):
+            subprocess.Popen([sys.executable])
+        else:
+            py = Path(sys.executable)
+            if sys.platform == "win32":
+                w = py.with_name("pythonw.exe")
+                if w.exists():
+                    py = w
+            subprocess.Popen([str(py), str(Path(__file__).resolve())])
+    finally:
+        os._exit(0)
 
 
 def create_shortcuts():
@@ -2651,6 +2658,9 @@ def create_shortcuts():
         target = str(pyw if pyw.exists() else sys.executable)
         sc_args = f'\"{Path(__file__).resolve()}\"'
     icon = DATA_DIR / "run8dlc.ico"
+    q_ = lambda s_: str(s_).replace("'", "''")
+    target, sc_args, icon = q_(target), sc_args.replace("'", "''"), \
+        q_(icon)
     ps = f"""$ws = New-Object -ComObject WScript.Shell
 $dirs = @([Environment]::GetFolderPath('Desktop'), "$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs")
 foreach ($d in $dirs) {{
@@ -2665,7 +2675,9 @@ foreach ($d in $dirs) {{
     p1.write_text(ps, encoding="utf-8")
     r = subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy",
                         "Bypass", "-File", str(p1)], capture_output=True,
-                       text=True)
+                       text=True,
+                       creationflags=getattr(subprocess,
+                                             "CREATE_NO_WINDOW", 0))
     p1.unlink(missing_ok=True)
     if r.returncode == 0:
         return True, "Shortcuts created on the Desktop and Start Menu."
@@ -2976,7 +2988,13 @@ if HAVE_TK:
                             self.dlbar["value"] = item[1]
             except queue.Empty:
                 pass
-            self.after(80, self._poll)
+            except Exception as e:
+                try:
+                    self._log_ui(f"ui error: {e!r}", "warn")
+                except Exception:
+                    pass
+            finally:
+                self.after(80, self._poll)
 
         def _set_busy(self, b):
             self.busy = b
@@ -3742,6 +3760,7 @@ if HAVE_TK:
                 box_w = int(self.HERO_W * ab[0] / ab[1])
                 box_h = int(box_w * 0.52)
             inner_w = tile_w - 12
+            capp = self.app()
             for r in items:
                 pid, st = r["pid"], r["status"]
                 tag = "t_" + pid
@@ -3768,7 +3787,7 @@ if HAVE_TK:
                                   fill=DIM, font=self.f_chip,
                                   tags=(tag, sel))
                 yy += box_h + 8
-                dsc = (self.app().by_id.get(pid, {}) or {}
+                dsc = (capp.by_id.get(pid, {}) or {}
                        ).get("desc") or ""
                 d["dsc"] = dsc
                 t_id = c.create_text(12, yy, anchor="nw",
@@ -3841,7 +3860,7 @@ if HAVE_TK:
                     nbtn += 1
                 if st == "installed" and (
                         DEMO_MODE or
-                        bool(_game_paths_for(self.app(), pid,
+                        bool(_game_paths_for(capp, pid,
                                              self.state)[0])):
                     _btn("Disable",
                          lambda pid=pid:
@@ -4129,7 +4148,14 @@ if HAVE_TK:
                      "files."
                      + (" (demo preview)" if DEMO_MODE else ""), "warn")
             if auto and not DEMO_MODE:
-                self._run_updater_stream()
+                # run automatically ONCE per announced update -- never
+                # loop on a stale news date at every launch
+                cfg = load_json(DATA_DIR / "config.json", {})
+                key = f"{site_date:%Y-%m-%d}"
+                if cfg.get("auto_updated_for") != key:
+                    cfg["auto_updated_for"] = key
+                    save_json(DATA_DIR / "config.json", cfg)
+                    self._run_updater_stream()
 
         def restore_backup(self):
             if self.busy:
@@ -4513,6 +4539,9 @@ if HAVE_TK:
                 self.log(f"opened store page for {r['name']}")
 
         def run_updater(self):
+            if DEMO_MODE:
+                self._upd_click()
+                return
             app = self.app()
             exe = updater_path(app)
             if not exe.is_file():
@@ -4574,6 +4603,8 @@ if HAVE_TK:
                                                        state=self.state)
                     for ln in lines:
                         self.log(ln, "accent" if ok else "warn")
+                except Exception as e:
+                    self.log(f"disable failed: {e!r}", "warn")
                 finally:
                     self.q.put(("busy", False))
                     self.q.put(("call", self.rescan))
@@ -4592,6 +4623,9 @@ if HAVE_TK:
             def work():
                 try:
                     ok, lines = restore_product(self.app(), r["pid"])
+                except Exception as e:
+                    self.log(f"enable failed: {e!r}", "warn")
+                    ok, lines = False, []
                     for ln in lines:
                         self.log(ln, "accent" if ok else "warn")
                 finally:
@@ -4723,6 +4757,12 @@ if HAVE_TK:
                 self.log(f"import failed: {e!r}", "warn")
 
         def _import_files(self, picks):
+            if DEMO_MODE:
+                self._demo_play(
+                    [f"reading {len(picks)} record file(s)...",
+                     "2 transaction IDs found",
+                     "ledger updated (demo -- nothing written)"])
+                return
             try:
                 imgs = [p for p in picks if Path(p).suffix.lower()
                         in (".png", ".jpg", ".jpeg", ".bmp")]
@@ -4791,9 +4831,8 @@ if HAVE_TK:
                 return
             try:
                 n_files, total = quarantine_size(self.app())
-                quar = load_json(DATA_DIR / "quarantine.json",
-                                 {"items": []})
-                n_items = len(quar.get("items", []))
+                quar = load_quarantine()
+                n_items = len(quar.get("records", []))
                 if not n_files and not n_items:
                     messagebox.showinfo("Permanently delete disabled items",
                                         "There are no disabled items -- "
@@ -5879,6 +5918,10 @@ if HAVE_TK:
                 var.set(str(Path(d)))
 
         def _shortcuts(self):
+            if DEMO_MODE:
+                self.parent.log("shortcuts created (demo -- nothing "
+                                "written)", "accent")
+                return
             ok, msg = create_shortcuts()
             (messagebox.showinfo if ok else messagebox.showerror)(
                 "Shortcuts", msg, parent=self)
@@ -5920,7 +5963,8 @@ if HAVE_TK:
                         "Restart now to apply the new look?",
                         parent=self):
                     restart_app()
-            for k in ("installers_dir", "backup_dir"):
+            for k in ("installers_dir", "backup_dir",
+                      "transactions_dir"):
                 try:
                     Path(cfg[k]).mkdir(parents=True, exist_ok=True)
                 except OSError:
@@ -5965,10 +6009,9 @@ if HAVE_TK:
         """First-run step 2: how are your purchase records kept?"""
 
         HELP = {
-            "screens": ("Put your receipt screenshots into the Receipts "
-                        "folder you just chose (or pick them in a moment). "
-                        "Windows' built-in OCR reads the transaction IDs "
-                        "off them automatically."),
+            "screens": ("Pick your receipt screenshots when prompted "
+                        "in a moment -- Windows' built-in OCR reads the "
+                        "transaction IDs off them automatically."),
             "emails": ("In Gmail: open a receipt, menu > 'Download "
                        "message'. In Outlook: drag the mail into a folder. "
                        "That makes .eml files -- you'll pick them right "
@@ -6052,9 +6095,9 @@ if HAVE_TK:
                         parent._run_cli(["ocr-receipts"],
                                         done=parent.rescan)
                     else:
-                        parent.log("drop receipt screenshots into your "
-                                   "Receipts folder, then More > Import "
-                                   "purchase records", "accent")
+                        parent.log("no screenshots picked -- Settings "
+                                   "> Import purchase records whenever "
+                                   "you're ready", "accent")
                 elif mode in ("emails", "docs"):
                     if messagebox.askyesno(
                             "Import purchase records",
