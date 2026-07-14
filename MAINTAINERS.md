@@ -44,6 +44,15 @@ Everything is in `Run8DLCManager.pyw` (~6,000 lines):
    URL spellings via `alt_urls`).
 6. The app icon is never redrawn — per-theme versions are RECOLORED from
    the original (users are attached to it).
+7. Treat backup files as untrusted input. Restore validates every archive
+   path, rejects duplicates/traversal, writes each payload through a temporary
+   file, and keeps the current PC's configured folders instead of trusting
+   paths stored inside the zip.
+8. Downloads and imported files must never replace an existing file. Use
+   `available_path()` and the `.part` + `os.replace` pattern.
+9. Quarantine records and `data\uninstalled\` are one unit: backup/restore
+   both, prune nested detected folders before Disable, and keep only unresolved
+   items in a record after a partial Enable.
 
 ## Working on it
 
@@ -54,7 +63,14 @@ Everything is in `Run8DLCManager.pyw` (~6,000 lines):
   ledger/catalog damage.
 - Check compiles cleanly: `python -W error::SyntaxWarning -m py_compile
   Run8DLCManager.pyw`.
-- Build the EXE with `build_exe.bat` (PyInstaller, one file). Antivirus
+- Safety regressions to repeat before release: interrupted download preserves
+  the old EXE; nested route Disable moves only the parent; partial Enable can
+  finish on retry; backup contains `Data/uninstalled`; restore rejects `..`
+  paths and ignores archived folder redirections; importing with `--demo`
+  creates no data directory.
+- Build the EXE with the included portable `build_exe.bat` (PyInstaller, one
+  file). It locates source beside itself or under `github\`, runs the compile
+  gate first, and writes `dist\Run8DLCManager.exe`. Antivirus
   sometimes side-eyes fresh PyInstaller builds; offering the .pyw
   alongside the EXE is deliberate.
 - The store scraper (`cmd_refresh` + `SLUG_RE`) and the update checker

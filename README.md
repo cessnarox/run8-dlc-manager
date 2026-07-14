@@ -8,16 +8,23 @@ the game itself needs updating.
 
 ## Get started (2 minutes)
 
-1. Put **`Run8DLCManager.exe`** (or `Run8DLCManager.pyw` if you have
-   Python 3) in its own folder — for example
-   `Documents\Run8 DLC Manager`. It keeps everything it makes in a
-   `data` folder next to itself; your folder stays tidy.
-2. Double-click it. A short first-run setup asks where things live (your
-   Run8 install is auto-detected), lets you pick a text size and a
-   railroad color theme, and offers to import your old purchase records —
-   receipt screenshots (read by Windows' built-in OCR), saved store
-   emails (.eml), or a document/spreadsheet with your transaction IDs.
-3. That's it. The manager scans your collection and shows everything.
+1. Double-click **`Run8DLCManager.exe`** (or `Run8DLCManager.pyw` if you
+   have Python 3) — from anywhere: Downloads, a USB stick, wherever it
+   landed. Nothing is written anywhere until you answer the first
+   question.
+2. A three-step setup walks you through it: **where the manager should
+   live** (it offers `Documents\Run8 DLC Manager`, moves itself there,
+   and can put shortcuts on your Desktop and Start Menu), **where
+   things are** (your Run8 installation is hunted down automatically —
+   the programs list, your own shortcuts, and every drive are checked;
+   if it truly can't be found you're asked to point at it, never
+   guessed at), and **your purchase records** — receipt screenshots
+   (read by Windows' built-in OCR), saved store emails (.eml), or a
+   document/spreadsheet with your transaction IDs.
+3. That's it. Every product picture, description, and price ships
+   inside the program — the gallery is complete the moment setup ends,
+   even with no internet. The manager then scans your collection and
+   shows everything.
 
 A **Settings** tab covers the same choices any time, and can create
 Desktop / Start Menu shortcuts for you.
@@ -84,8 +91,11 @@ If the store lists products the catalog doesn't know yet, a **"New DLC in
 store!"** button adds just the new ones in seconds. Both checks can be
 switched off in Settings.
 
-**Refresh Store Prices** (Settings → Tools) re-reads every product page
-for current prices — only needed occasionally; they don't do sales.
+Everything else is already on board: the full catalog, prices, and all
+product pictures ship inside the program, so the internet is only needed
+for genuinely new store releases. **Refresh Store Prices** (Settings →
+Tools) re-reads every product page — only needed occasionally; they
+don't do sales.
 
 ## Backups — and getting out of trouble
 
@@ -116,6 +126,7 @@ Run8 DLC Manager\
   data\                <- everything the app makes: settings, catalog,
                           ledger, images, quarantined routes
   Installers\          <- your DLC installer EXEs
+  Transactions\        <- receipts & purchase records (drag old ones in)
   Backups\             <- Run8DLC_Backup.zip lands here
 ```
 
